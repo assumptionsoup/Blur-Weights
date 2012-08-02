@@ -39,7 +39,7 @@ import bpy
 import bmesh
 import math
 from mathutils import *
-
+# test
 class BlurWeights( object ):
 	def __init__(self, active_index = None):
 		
