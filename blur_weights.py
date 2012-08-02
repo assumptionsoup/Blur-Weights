@@ -22,13 +22,13 @@ implementing various operations badly or just plain wrong.'''
 '''
 
 bl_info = {
-	'name': 'Blur All Weights',
+	'name': 'Blur Weights',
 	'author': 'Jordan Hueckstaedt',
 	'version': (1, 0),
 	'blender': (2, 63, 0),
 	'location': 'View > Weight Tools > Blur',
 	'warning': '', # used for warning icon and text in addons panel
-	'description': 'Blurs all weights in the selected vertex group.',
+	'description': 'Blurs the weights in the selected vertex group.',
 	"wiki_url": "",
 	"tracker_url": "",
 	"support": 'TESTING',
