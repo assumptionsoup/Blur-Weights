@@ -118,8 +118,9 @@ class BlurWeights( object ):
 		for i in range(iterations):
 			new_weights = weights
 			for x, i in enumerate(self.vert_indexes):
-				# Get sum of connected weights, not including the current vert weight or verts not in group
-				if do_gaussian:
+				# Skip guassian if the denominator in the weight function is 0 
+				# Which would most likely mean all the connected verts are in the same position
+				if do_gaussian and self.gaussian_weights[x]['total_weight'] > 0.0:
 					average_weight = 0
 					for v in self.connected_verts[x]:
 						average_weight += self.gaussian_weights[x][str(v)] / self.gaussian_weights[x]['total_weight'] * weights[v]
