@@ -40,6 +40,51 @@ import bmesh
 import math
 from mathutils import *
 
+class BlurSettingsCollection(bpy.types.PropertyGroup):
+	iterations = bpy.props.IntProperty(
+		name = "Iter", 
+		description = "Iterate this many times",
+		default = 1,
+		min = 1,
+		soft_max = 20)
+	
+	factor = bpy.props.FloatProperty(
+		name = "Factor", 
+		description = "Laplace Factor",
+		default = 0.5,
+		soft_min = 0.0,
+		soft_max = 1.0)
+	
+	operation = bpy.props.EnumProperty(
+		name="Blur Operation",
+		items =	(('GAUSSIAN', "Gaussian", "Gaussian Blur"),
+				('AVERAGE', "Average", "Simple Average Blur"),
+				),
+		)
+	
+	hold_type = bpy.props.EnumProperty(
+		name="Blur Hold",
+		items =	(('NORMAL', "Normal", "Normal Blur"),
+				('HOLD', "Hold", "Hold weights above or below a certain value"),
+				),
+		)
+	
+	hold_below = bpy.props.FloatProperty(
+		name = "Hold Below",
+		description = "Hold weights at or below this value during blur operation.",
+		default = -0.1,
+		soft_min = -0.1,
+		soft_max = 1.0,
+		subtype = 'FACTOR')
+	
+	hold_above = bpy.props.FloatProperty(
+		name = "Hold Above",
+		description = "Hold weights at or above this value during blur operation.",
+		default = 1.1,
+		soft_min = 0.0,
+		soft_max = 1.1,
+		subtype = 'FACTOR')
+
 class BlurWeights( object ):
 	def __init__(self, active_index = None):
 		
@@ -51,6 +96,20 @@ class BlurWeights( object ):
 		bm_obj = bmesh.new()
 		bm_obj.from_mesh(obj.data)
 	
+		# Find masking - this would be a lot more efficient if face masking
+		# actually is the same as vertex masking.  Then the test could go in 
+		# the "Get weight Info" loop easily.  But I'm not sure, so I'm doing it
+		# this way to be safe.
+		face_mask = obj.data.use_paint_mask
+		vertex_mask = obj.data.use_paint_mask_vertex
+		if face_mask or vertex_mask:
+			if face_mask:
+				masked_verts = set([v.index for f in bm_obj.faces if f.select for v in f.verts])
+			else:
+				masked_verts = set([v.index for v in bm_obj.verts if v.select])
+		else:
+			masked_verts = None
+		
 		weights = [1.0 for x in range(len(obj.data.vertices))]
 		vert_indexes = []
 		vert_group_indexes = []
@@ -59,13 +118,15 @@ class BlurWeights( object ):
 		
 		# Get weight info.  It's weird, I know
 		for vert in obj.data.vertices:
-			for x, group_info in enumerate(vert.groups):
-				if group_info.group == active_index:
-					# Get group info
-					weights[vert.index] = group_info.weight
-					vert_indexes.append(vert.index)
-					vert_group_indexes.append(x)
-					break
+			# Skip if vert is not in mask.
+			if masked_verts is None or vert.index in masked_verts:
+				for x, group_info in enumerate(vert.groups):
+					if group_info.group == active_index:
+						# Get group info
+						weights[vert.index] = group_info.weight
+						vert_indexes.append(vert.index)
+						vert_group_indexes.append(x)
+						break
 		
 		# Sets are MUCH faster to test in than lists.  This made __init__ run 3x faster for me.
 		vert_indexes_test = set(vert_indexes)
@@ -111,13 +172,21 @@ class BlurWeights( object ):
 		bm_obj.free()
 	
 		
-	def execute(self, iterations = 1, factor = 0.5, do_gaussian = True):
+	def execute(self, iterations = 1, factor = 0.5, do_gaussian = True, do_hold = False, hold_above = 1.0, hold_below = 0.0):
 		# Calculate the blurred weights.
+		# Whatever you do, never save obj to a class member variable.  Blender will freeze.
+		obj = bpy.context.active_object
+		
 		# Make a copy of weights.  Otherwise edits will be compounded onto the initial weight set.
 		weights = self.weights[:]
+		
 		for i in range(iterations):
 			new_weights = weights
 			for x, i in enumerate(self.vert_indexes):
+				# Skip calculation if holding weights and current weight passes conditions.
+				if do_hold and (weights[i] >= hold_above or weights[i] <= hold_below):
+					continue
+				
 				# Skip guassian if the denominator in the weight function is 0 
 				# Which would most likely mean all the connected verts are in the same position
 				if do_gaussian and self.gaussian_weights[x]['total_weight'] > 0.0:
@@ -132,8 +201,6 @@ class BlurWeights( object ):
 			weights = new_weights[:]
 
 		# Update object weights
-		# Whatever you do, never save obj to a class member variable.  Blender will freeze.
-		obj = bpy.context.active_object
 		for x, i in enumerate(self.vert_indexes):
 			obj.data.vertices[i].groups[self.vert_group_indexes[x]].weight = weights[i]
 		obj.data.update()
@@ -143,36 +210,25 @@ class WeightPaintBlurAll(bpy.types.Operator):
 	bl_label = "Blur"
 	bl_options = {'REGISTER', 'UNDO'}
 	
-	iterations = bpy.props.IntProperty(
-		name = "Iterations", 
-		description = "Repeat how many times",
-		default = 1,
-		min = 0,
-		soft_max = 20)
+	settings = bpy.props.PointerProperty(type = BlurSettingsCollection)
 	
-	factor = bpy.props.FloatProperty(
-		name = "Factor", 
-		description = "Laplace Factor",
-		default = 0.5,
-		soft_min = 0.0,
-		soft_max = 1.0)
-	
-	operation = bpy.props.EnumProperty(
-		name="Blur Operation",
-		items =	(('GAUSSIAN', "Gaussian", "Gaussian Blur"),
-				('AVERAGE', "Average", "Simple Average Blur"),
-				),
-		)
 	active_index = None
 	blur = None
 
 	def draw(self, context):
-		self.layout.prop(self, "iterations")
+		self.layout.prop(self.settings, "iterations", text = "Iter")
 		# self.layout.prop(self, "factor")
 		box = self.layout.box()
 		row = box.row()
-		row.prop(self, "operation", expand = True)
-
+		row.prop(self.settings, "operation", expand = True)
+		box = self.layout.box()
+		row = box.row()
+		row.prop(self.settings, "hold_type", expand = True)
+		row = box.row(align = True)
+		row.prop(self.settings, "hold_below")
+		row = row.split()
+		row.prop(self.settings, "hold_above")
+	
 	@classmethod
 	def poll(cls, context):
 		obj = context.active_object
@@ -184,16 +240,16 @@ class WeightPaintBlurAll(bpy.types.Operator):
 		# global_undo_state = context.user_preferences.edit.use_global_undo
 		# context.user_preferences.edit.use_global_undo = False
 		
-		if self.operation == 'GAUSSIAN':
-			do_gaussian = True
-		else:
-			do_gaussian = False
-		
+		do_gaussian = self.settings.operation == 'GAUSSIAN'
+		do_hold = self.settings.hold_type != 'NORMAL'
 		# Initialize the blur operator if it hasn't been.
 		if self.blur is None:
 			self.blur = BlurWeights( self.active_index )
 		
-		self.blur.execute( iterations = self.iterations, factor = self.factor, do_gaussian = do_gaussian  )
+		self.blur.execute( iterations = self.settings.iterations, 
+			factor = self.settings.factor, do_gaussian = do_gaussian,
+			do_hold = do_hold, hold_above = self.settings.hold_above,
+			hold_below = self.settings.hold_below)
 		
 		# This is a hack.  For some reason the active vertex group changes during execution,
 		# Only when used from the Blur PANEL (not the regular blur buttons in the weight paint section)
@@ -206,53 +262,30 @@ class WeightPaintBlurAll(bpy.types.Operator):
 		return{'FINISHED'} 
 	
 	def invoke(self, context, event):
-		self.iterations = context.scene.weightpaint_blur_all_iterations
-		self.operation = context.scene.weightpaint_blur_all_operation
-		self.factor = context.scene.weightpaint_blur_all_factor
+		for key, value in context.scene.weightpaint_blur_all_settings.items():
+			self.settings[key] = value
 		self.active_index = context.active_object.vertex_groups.active_index
 		return self.execute(context)
 
 def panel_func(self, context):	
-	# self.layout.operator("object.weightpaint_blur_all", text="Blur")
 	row = self.layout.row(align = True).split(0.35)
 	row.alignment = 'EXPAND'
 	row.operator("object.weightpaint_blur_all", text="Blur")
 	scn = context.scene
-	#row = self.layout.row(align=True)
-	row.prop(scn, "weightpaint_blur_all_iterations")
-	
+	row.prop(scn.weightpaint_blur_all_settings, "iterations")
+
+
 def register():
+	bpy.utils.register_class(BlurSettingsCollection)
 	bpy.utils.register_class(WeightPaintBlurAll)
-	
+	bpy.types.Scene.weightpaint_blur_all_settings = bpy.props.PointerProperty(type = BlurSettingsCollection)
 	bpy.types.VIEW3D_PT_tools_weightpaint.append(panel_func)
-	bpy.types.Scene.weightpaint_blur_all_iterations = bpy.props.IntProperty(
-		name = "Iter", 
-		description = "Iterate this many times",
-		default = 1,
-		min = 1,
-		soft_max = 20)
-	
-	bpy.types.Scene.weightpaint_blur_all_factor = bpy.props.FloatProperty(
-		name = "Factor", 
-		description = "Laplace Factor",
-		default = 0.5,
-		soft_min = 0.0,
-		soft_max = 1.0)
-	
-	bpy.types.Scene.weightpaint_blur_all_operation = bpy.props.EnumProperty(
-		name="Blur Operation",
-		items =	(('GAUSSIAN', "Gaussian", "Gaussian Blur"),
-				('AVERAGE', "Average", "Simple Average Blur"),
-				),
-		)
 	
 def unregister():
 	bpy.utils.unregister_class(WeightPaintBlurAll)
-	
 	bpy.types.VIEW3D_PT_tools_weightpaint.remove(panel_func)
-	del bpy.types.Scene.weightpaint_blur_all_iterations
-	del bpy.types.Scene.weightpaint_blur_all_factor
-	del bpy.types.Scene.weightpaint_blur_all_operation
-
+	
+	del bpy.types.Scene.weightpaint_blur_all_settings
+	bpy.utils.unregister_class(BlurSettingsCollection)
 if __name__ == "__main__":
 	register()
