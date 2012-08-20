@@ -82,40 +82,45 @@ class BlurWeights( object ):
 		bm_obj = bmesh.new()
 		bm_obj.from_mesh(obj.data)
 	
-		# Find masking - this would be a lot more efficient if face masking
-		# actually is the same as vertex masking.  Then the test could go in 
-		# the "Get weight Info" loop easily.  But I'm not sure, so I'm doing it
-		# this way to be safe.
+		# Find face masking.  Faces can only be found in bmesh, however,
+		# in paint mode vert selection is not updated correctly to edit mode
+		# or in bmesh, so vert selection can only be found through object.data
+		# I suspect this is a bug.
 		face_mask = obj.data.use_paint_mask
 		vertex_mask = obj.data.use_paint_mask_vertex
-		if face_mask or vertex_mask:
-			if face_mask:
-				masked_verts = set([v.index for f in bm_obj.faces if f.select for v in f.verts])
-			else:
-				masked_verts = set([v.index for v in bm_obj.verts if v.select])
-		else:
-			masked_verts = None
+		if face_mask:
+			masked_face_verts = set([v.index for f in bm_obj.faces if f.select for v in f.verts])
 		
 		weights = [1.0 for x in range(len(obj.data.vertices))]
 		vert_indexes = []
+		vert_indexes_test = []
 		vert_group_indexes = []
 		connected_verts = []
 		gaussian_weights = []
 		
+		# Convenience function to find group index
+		def vert_group_index(vert, group_id):
+			for x, group_info in enumerate(vert.groups):
+				if group_info.group == group_id:
+					return x
+			return None
+					
 		# Get weight info.  It's weird, I know
 		for vert in obj.data.vertices:
-			# Skip if vert is not in mask.
-			if masked_verts is None or vert.index in masked_verts:
-				for x, group_info in enumerate(vert.groups):
-					if group_info.group == active_index:
-						# Get group info
-						weights[vert.index] = group_info.weight
-						vert_indexes.append(vert.index)
-						vert_group_indexes.append(x)
-						break
+			i = vert_group_index(vert, active_index)
+			if i is not None:
+				weights[vert.index] = vert.groups[i].weight
+				
+				# Skip if vert is not in mask.
+				if not vert.hide and (not vertex_mask or vert.select) and (not face_mask or vert.index in masked_face_verts):
+					# Get group info
+					vert_indexes.append(vert.index)
+					vert_group_indexes.append(i)
+				else:
+					vert_indexes_test.append(vert.index)
 		
 		# Sets are MUCH faster to test in than lists.  This made __init__ run 3x faster for me.
-		vert_indexes_test = set(vert_indexes)
+		vert_indexes_test = set(vert_indexes + vert_indexes_test)
 		
 		# Only use connected verts in which are in the group.  God this part was a bitch to get working.
 		# Also, pre-calculate the guassian weights if needed
@@ -143,7 +148,7 @@ class BlurWeights( object ):
 					gaussian_weight['total_weight'] += gaussian_weight[str(i)]
 					
 				gaussian_weights.append( gaussian_weight )
-		
+
 		# The last for loop was iterating in reverse to allow removing indexes while iterating.
 		# So these lists are reversed
 		gaussian_weights.reverse()
