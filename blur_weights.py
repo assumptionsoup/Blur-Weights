@@ -38,7 +38,7 @@ bl_info = {
 import bpy
 import bmesh
 import math
-from mathutils import *
+# from mathutils import *
 
 class BlurSettingsCollection(bpy.types.PropertyGroup):
 	iterations = bpy.props.IntProperty(
@@ -62,28 +62,14 @@ class BlurSettingsCollection(bpy.types.PropertyGroup):
 				),
 		)
 	
-	hold_type = bpy.props.EnumProperty(
-		name="Blur Hold",
-		items =	(('NORMAL', "Normal", "Normal Blur"),
-				('HOLD', "Hold", "Hold weights above or below a certain value"),
+	blur_type = bpy.props.EnumProperty(
+		name="Blur Type",
+		items =	(('0', "Normal", "Normal Blur"),
+				('1', "Shrink", "Blur will only decrease values"),
+				('2', "Grow", "Blur will only increase values"),
 				),
 		)
-	
-	hold_below = bpy.props.FloatProperty(
-		name = "Hold Below",
-		description = "Hold weights at or below this value during blur operation.",
-		default = -0.1,
-		soft_min = -0.1,
-		soft_max = 1.0,
-		subtype = 'FACTOR')
-	
-	hold_above = bpy.props.FloatProperty(
-		name = "Hold Above",
-		description = "Hold weights at or above this value during blur operation.",
-		default = 1.1,
-		soft_min = 0.0,
-		soft_max = 1.1,
-		subtype = 'FACTOR')
+
 
 class BlurWeights( object ):
 	def __init__(self, active_index = None):
@@ -136,7 +122,7 @@ class BlurWeights( object ):
 		for x in reversed(range(len(vert_indexes))):
 			vert = bm_obj.verts[vert_indexes[x]]
 			
-			connected_vert = [v.index for edge in vert.link_edges for v in edge.verts if v.index != vert.index and v.index in vert_indexes_test]			
+			connected_vert = [v.index for edge in vert.link_edges for v in edge.verts if v.index != vert.index] and v.index in vert_indexes_test]			
 			
 			inclusive_verts = connected_vert + [vert.index]
 			link_edges = [edge for edge in vert.link_edges if edge.verts[0].index in inclusive_verts and edge.verts[1].index in inclusive_verts]
@@ -172,8 +158,14 @@ class BlurWeights( object ):
 		bm_obj.free()
 	
 		
-	def execute(self, iterations = 1, factor = 0.5, do_gaussian = True, do_hold = False, hold_above = 1.0, hold_below = 0.0):
-		# Calculate the blurred weights.
+	def execute(self, iterations = 1, factor = 0.5, do_gaussian = True, blur_type = 0):
+		''' Calculate the blurred weights.
+		blur_type options:
+		0 - Normal
+		1 - Shrink
+		2 - Grow
+		'''
+		
 		# Whatever you do, never save obj to a class member variable.  Blender will freeze.
 		obj = bpy.context.active_object
 		
@@ -183,10 +175,6 @@ class BlurWeights( object ):
 		for i in range(iterations):
 			new_weights = weights
 			for x, i in enumerate(self.vert_indexes):
-				# Skip calculation if holding weights and current weight passes conditions.
-				if do_hold and (weights[i] >= hold_above or weights[i] <= hold_below):
-					continue
-				
 				# Skip guassian if the denominator in the weight function is 0 
 				# Which would most likely mean all the connected verts are in the same position
 				if do_gaussian and self.gaussian_weights[x]['total_weight'] > 0.0:
@@ -198,6 +186,13 @@ class BlurWeights( object ):
 				
 				# Assign new weights with using laplace factor (or can I just call this a lerp? hmmm...)
 				new_weights[i] = factor * average_weight + (1.0 - factor) * weights[i]
+				
+				# Grow or shrink weights.
+				if blur_type == 1:
+					new_weights[i] = min(new_weights[i], self.weights[i])
+				elif blur_type == 2:
+					new_weights[i] = max(new_weights[i], self.weights[i])
+				
 			weights = new_weights[:]
 
 		# Update object weights
@@ -223,12 +218,8 @@ class WeightPaintBlurAll(bpy.types.Operator):
 		row.prop(self.settings, "operation", expand = True)
 		box = self.layout.box()
 		row = box.row()
-		row.prop(self.settings, "hold_type", expand = True)
-		row = box.row(align = True)
-		row.prop(self.settings, "hold_below")
-		row = row.split()
-		row.prop(self.settings, "hold_above")
-	
+		row.prop(self.settings, "blur_type", expand = True)
+		
 	@classmethod
 	def poll(cls, context):
 		obj = context.active_object
@@ -241,15 +232,14 @@ class WeightPaintBlurAll(bpy.types.Operator):
 		# context.user_preferences.edit.use_global_undo = False
 		
 		do_gaussian = self.settings.operation == 'GAUSSIAN'
-		do_hold = self.settings.hold_type != 'NORMAL'
+
 		# Initialize the blur operator if it hasn't been.
 		if self.blur is None:
 			self.blur = BlurWeights( self.active_index )
 		
 		self.blur.execute( iterations = self.settings.iterations, 
 			factor = self.settings.factor, do_gaussian = do_gaussian,
-			do_hold = do_hold, hold_above = self.settings.hold_above,
-			hold_below = self.settings.hold_below)
+			blur_type = int(self.settings.blur_type))
 		
 		# This is a hack.  For some reason the active vertex group changes during execution,
 		# Only when used from the Blur PANEL (not the regular blur buttons in the weight paint section)
