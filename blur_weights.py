@@ -69,6 +69,11 @@ class BlurSettingsCollection(bpy.types.PropertyGroup):
 				('2', "Grow", "Blur will only increase values"),
 				),
 		)
+	
+	selected_only = bpy.props.BoolProperty(
+		name = "Selected Only",
+		default = False)
+	
 
 
 class BlurWeights( object ):
@@ -123,7 +128,7 @@ class BlurWeights( object ):
 		vert_indexes_test = set(vert_indexes + vert_indexes_test)
 		
 		# Only use connected verts in which are in the group.  God this part was a bitch to get working.
-		# Also, pre-calculate the guassian weights if needed
+		# Also, pre-calculate the guassian weights
 		for x in reversed(range(len(vert_indexes))):
 			vert = bm_obj.verts[vert_indexes[x]]
 			
@@ -163,7 +168,7 @@ class BlurWeights( object ):
 		bm_obj.free()
 	
 		
-	def execute(self, iterations = 1, factor = 0.5, do_gaussian = True, blur_type = 0):
+	def execute(self, iterations = 1, factor = 0.5, do_gaussian = True, blur_type = 0, selected_only = False):
 		''' Calculate the blurred weights.
 		blur_type options:
 		0 - Normal
@@ -180,23 +185,34 @@ class BlurWeights( object ):
 		for i in range(iterations):
 			new_weights = weights
 			for x, i in enumerate(self.vert_indexes):
-				# Skip guassian if the denominator in the weight function is 0 
-				# Which would most likely mean all the connected verts are in the same position
-				if do_gaussian and self.gaussian_weights[x]['total_weight'] > 0.0:
-					average_weight = 0
-					for v in self.connected_verts[x]:
-						average_weight += self.gaussian_weights[x][str(v)] / self.gaussian_weights[x]['total_weight'] * weights[v]
-				else:
-					average_weight = sum([weights[v] for v in self.connected_verts[x]]) / len(self.connected_verts[x])
-				
-				# Assign new weights with using laplace factor (or can I just call this a lerp? hmmm...)
-				new_weights[i] = factor * average_weight + (1.0 - factor) * weights[i]
-				
-				# Grow or shrink weights.
-				if blur_type == 1:
-					new_weights[i] = min(new_weights[i], self.weights[i])
-				elif blur_type == 2:
-					new_weights[i] = max(new_weights[i], self.weights[i])
+				if not selected_only  or (not do_gaussian and obj.data.vertices[i].select):
+					# Skip guassian if the denominator in the weight function is 0 
+					# Which would most likely mean all the connected verts are in the same position
+					if do_gaussian and self.gaussian_weights[x]['total_weight'] > 0.0:
+						average_weight = 0
+						for v in self.connected_verts[x]:
+							average_weight += self.gaussian_weights[x][str(v)] / self.gaussian_weights[x]['total_weight'] * weights[v]
+					else:
+						# average_weight = sum([weights[v] for v in self.connected_verts[x]]) / len(self.connected_verts[x])
+						average_weight = 0
+						num_set = 0
+						for v in self.connected_verts[x]:
+							if not selected_only or obj.data.vertices[v].select:
+								average_weight += weights[v]
+								num_set += 1
+						if num_set:
+							average_weight /= num_set
+						else:
+							continue
+					
+					# Assign new weights with using laplace factor (or can I just call this a lerp? hmmm...)
+					new_weights[i] = factor * average_weight + (1.0 - factor) * weights[i]
+					
+					# Grow or shrink weights.
+					if blur_type == 1:
+						new_weights[i] = min(new_weights[i], self.weights[i])
+					elif blur_type == 2:
+						new_weights[i] = max(new_weights[i], self.weights[i])
 				
 			weights = new_weights[:]
 
@@ -216,7 +232,10 @@ class WeightPaintBlurAll(bpy.types.Operator):
 	blur = None
 
 	def draw(self, context):
-		self.layout.prop(self.settings, "iterations", text = "Iter")
+		row = self.layout.row()
+		row.prop(self.settings, "iterations", text = "Iter")
+		row = self.layout.row()
+		row.prop(self.settings, "selected_only")
 		# self.layout.prop(self, "factor")
 		box = self.layout.box()
 		row = box.row()
@@ -244,7 +263,8 @@ class WeightPaintBlurAll(bpy.types.Operator):
 		
 		self.blur.execute( iterations = self.settings.iterations, 
 			factor = self.settings.factor, do_gaussian = do_gaussian,
-			blur_type = int(self.settings.blur_type))
+			blur_type = int(self.settings.blur_type),
+			selected_only = self.settings.selected_only)
 		
 		# This is a hack.  For some reason the active vertex group changes during execution,
 		# Only when used from the Blur PANEL (not the regular blur buttons in the weight paint section)
